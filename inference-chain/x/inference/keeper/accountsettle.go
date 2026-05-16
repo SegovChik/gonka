@@ -3,6 +3,7 @@ package keeper
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"cosmossdk.io/log"
 	mathsdk "cosmossdk.io/math"
@@ -189,6 +190,27 @@ func (k *Keeper) SettleAccounts(ctx context.Context, currentEpochIndex uint64, p
 	rewardAmount = bitcoinResult.Amount
 	governanceRewardAmount = bitcoinResult.GovernanceAmount
 
+	// Emit gonka.settlement.reward_compute per participant - one ABCI event
+	// per SettleResult. Iterates `amounts` in the deterministic order
+	// produced by GetBitcoinSettleAmounts (which iterates allParticipants).
+	// Determinism: all values via strconv / .String(); no time, no rand.
+	// Schema: inference-chain/docs/abci_events.md.
+	settlementEventMgr := sdkCtx.EventManager()
+	for _, sr := range amounts {
+		if sr == nil || sr.Settle == nil {
+			continue
+		}
+		settlementEventMgr.EmitEvent(sdk.NewEvent(
+			"gonka.settlement.reward_compute",
+			sdk.NewAttribute("epoch", strconv.FormatUint(currentEpochIndex, 10)),
+			sdk.NewAttribute("participant", sr.Settle.Participant),
+			sdk.NewAttribute("confirmation_weight", strconv.FormatInt(sr.ConfirmationWeight, 10)),
+			sdk.NewAttribute("effective_weight", strconv.FormatInt(sr.EffectiveWeight, 10)),
+			sdk.NewAttribute("status", sr.Status.String()),
+			sdk.NewAttribute("rewarded_coins", strconv.FormatUint(sr.Settle.RewardCoins, 10)),
+		))
+	}
+
 	// Use CacheContext so all current-epoch state mutations are atomic.
 	// If any step fails (minting, balance resets, settle writes),
 	// nothing is committed and the caller sees a clean error with no partial state.
@@ -321,6 +343,17 @@ func (rc *DistributedCoinInfo) calculateDistribution(participantWorkDone int64) 
 type SettleResult struct {
 	Settle *types.SettleAmount
 	Error  error
+
+	// Per-participant settlement diagnostics populated by
+	// CalculateParticipantBitcoinRewards and consumed by the
+	// gonka.settlement.reward_compute ABCI event emission in Settle.
+	// Required because CalculateParticipantBitcoinRewards has no
+	// sdk.Context and cannot emit events itself (would also force a
+	// signature change in the only place that holds the participant /
+	// effective-weight math). See PRD FR-3.5.
+	ConfirmationWeight int64
+	EffectiveWeight    int64
+	Status             types.ParticipantStatus
 }
 
 // modelCoefficients extracts per-model weight_scale_factor from PocParams.

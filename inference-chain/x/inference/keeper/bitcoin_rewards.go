@@ -691,6 +691,15 @@ func CalculateParticipantBitcoinRewards(
 	// IMPORTANT: We intentionally DO NOT renormalize totalPoCWeightBeforeDowntime after downtime punishment,
 	// invalidation, or CPoC reductions. Any "missed" share becomes undistributed and transferred to governance.
 
+	// Pre-build participant -> confirmation_weight lookup for the
+	// gonka.settlement.reward_compute ABCI event (slice 3.5). The settle
+	// loop below already iterates participants in deterministic order;
+	// this map keeps the per-participant ConfirmationWeight in scope.
+	confirmationWeightByAddr := make(map[string]int64, len(epochGroupData.ValidationWeights))
+	for _, vw := range epochGroupData.ValidationWeights {
+		confirmationWeightByAddr[vw.MemberAddress] = vw.ConfirmationWeight
+	}
+
 	// 5. Create settle results for each participant
 	settleResults := make([]*SettleResult, 0, len(participants))
 	var totalDistributed uint64 = 0
@@ -753,10 +762,18 @@ func CalculateParticipantBitcoinRewards(
 			}
 		}
 
-		// Create SettleResult
+		// Create SettleResult. The diagnostic fields (ConfirmationWeight /
+		// EffectiveWeight / Status) feed the gonka.settlement.reward_compute
+		// ABCI event in Settle. EffectiveWeight is the post-CPoC, post-
+		// power-cap weight (the value the proportional distribution used).
+		participantConfirmationWeight := confirmationWeightByAddr[participant.Address]
+		participantEffectiveWeight := int64(participantWeights[participant.Address])
 		settleResults = append(settleResults, &SettleResult{
-			Settle: settleAmount,
-			Error:  settleError,
+			Settle:             settleAmount,
+			Error:              settleError,
+			ConfirmationWeight: participantConfirmationWeight,
+			EffectiveWeight:    participantEffectiveWeight,
+			Status:             participant.Status,
 		})
 	}
 
