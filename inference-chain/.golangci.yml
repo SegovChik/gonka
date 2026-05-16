@@ -11,6 +11,7 @@ linters:
     - ineffassign
   enable:
     - forbidigo
+    - depguard
   settings:
     forbidigo:
       forbid:
@@ -18,6 +19,17 @@ linters:
           msg: "panic forbidden in consensus code"
         - pattern: Must
           msg: "Must* helpers forbidden in consensus code"
+    depguard:
+      # INV-5: the OpenTelemetry SDK is non-deterministic (sampling, batching,
+      # exporter timing, network failures) and MUST NOT be imported under
+      # inference-chain/. Chain code surfaces observability via ABCI events
+      # (see docs/abci_events.md); an out-of-process indexer (chain-trace-indexer,
+      # PR #4) consumes those events and emits OTel spans.
+      rules:
+        main:
+          deny:
+            - pkg: go.opentelemetry.io/otel
+              desc: "OpenTelemetry SDK forbidden in consensus code (INV-5). Use ABCI events; see inference-chain/docs/abci_events.md."
   exclusions:
     paths:
       - "^testutil/"
