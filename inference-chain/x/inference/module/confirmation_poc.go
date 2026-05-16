@@ -418,6 +418,15 @@ func (am AppModule) evaluateConfirmation(
 		return fmt.Errorf("evaluateConfirmation: failed to partition weights: %w", err)
 	}
 
+	// Capture prev ConfirmationWeight BEFORE foldEventReadings mutates the
+	// slice in place - required for the gonka.confirmation_event.participant
+	// ABCI event emitted below. Per gonka/CLAUDE.md Hard Rules and PRD
+	// FR-3.3: deterministic map keyed on bech32 address, no time, no rand.
+	prevWeights := make(map[string]int64, len(epochGroupData.ValidationWeights))
+	for _, vw := range epochGroupData.ValidationWeights {
+		prevWeights[vw.MemberAddress] = vw.ConfirmationWeight
+	}
+
 	updated, ratios := foldEventReadings(epochGroupData, measured, preserved, notPreserved)
 	if updated {
 		am.LogInfo("evaluateConfirmation: confirmation weights lowered", types.PoC,
@@ -439,6 +448,46 @@ func (am AppModule) evaluateConfirmation(
 		}
 		participant.CurrentEpochStats.ConfirmationPoCRatio = ratio
 		am.keeper.SetParticipant(ctx, participant)
+	}
+
+	// Emit ABCI events documenting the confirmation event evaluation so the
+	// chain-trace-indexer (PR #4) can reconstruct per-host ConfirmationWeight
+	// lifecycle out-of-process. Schema: inference-chain/docs/abci_events.md.
+	// Determinism rules (per gonka/CLAUDE.md Hard Rules): all values via
+	// strconv.FormatInt / Decimal.ToDecimal().String(); iterate ValidationWeights
+	// in proto-slice order; no time, no rand, no float math.
+	eventID := fmt.Sprintf("%d-%d", event.EpochIndex, event.TriggerHeight)
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+
+	sdkCtx.EventManager().EmitEvent(sdk.NewEvent(
+		"gonka.confirmation_event.evaluated",
+		sdk.NewAttribute("epoch", strconv.FormatUint(event.EpochIndex, 10)),
+		sdk.NewAttribute("trigger_height", strconv.FormatInt(event.TriggerHeight, 10)),
+		sdk.NewAttribute("event_id", eventID),
+	))
+
+	for _, vw := range epochGroupData.ValidationWeights {
+		addr := vw.MemberAddress
+		ratio, ok := ratios[addr]
+		if !ok {
+			continue
+		}
+		prev := prevWeights[addr]
+		newCW := vw.ConfirmationWeight
+		sdkCtx.EventManager().EmitEvent(sdk.NewEvent(
+			"gonka.confirmation_event.participant",
+			sdk.NewAttribute("epoch", strconv.FormatUint(event.EpochIndex, 10)),
+			sdk.NewAttribute("trigger_height", strconv.FormatInt(event.TriggerHeight, 10)),
+			sdk.NewAttribute("event_id", eventID),
+			sdk.NewAttribute("participant", addr),
+			sdk.NewAttribute("prev_cw", strconv.FormatInt(prev, 10)),
+			sdk.NewAttribute("new_cw", strconv.FormatInt(newCW, 10)),
+			sdk.NewAttribute("delta", strconv.FormatInt(newCW-prev, 10)),
+			sdk.NewAttribute("measured", strconv.FormatInt(measured[addr], 10)),
+			sdk.NewAttribute("total_expected", strconv.FormatInt(preserved[addr]+notPreserved[addr], 10)),
+			sdk.NewAttribute("preserved", strconv.FormatInt(preserved[addr], 10)),
+			sdk.NewAttribute("ratio", ratio.ToDecimal().String()),
+		))
 	}
 
 	if updated {
