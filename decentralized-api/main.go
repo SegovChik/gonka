@@ -10,6 +10,7 @@ import (
 	"decentralized-api/internal/event_listener"
 	"decentralized-api/internal/modelmanager"
 	"decentralized-api/internal/nats/server"
+	"decentralized-api/internal/observability"
 	adminserver "decentralized-api/internal/server/admin"
 	mlserver "decentralized-api/internal/server/mlnode"
 	pserver "decentralized-api/internal/server/public"
@@ -67,6 +68,17 @@ func main() {
 	if config.GetApiConfig().TestMode {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
+
+	tracerShutdown, err := observability.InitTracer(context.Background())
+	if err != nil {
+		logging.Warn("Tracer init failed; continuing without tracing", types.System, "error", err)
+		tracerShutdown = func(context.Context) error { return nil }
+	}
+	defer func() {
+		shutCtx, cancelShut := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelShut()
+		_ = tracerShutdown(shutCtx)
+	}()
 
 	natssrv := server.NewServer(config.GetNatsConfig())
 	if err := natssrv.Start(); err != nil {
@@ -298,6 +310,11 @@ func main() {
 	if db := config.SqlDb().GetDb(); db != nil {
 		_ = db.Close()
 	}
+
+	// os.Exit skips deferred functions; flush spans here so traces aren't lost.
+	tracerCtx, cancelTracer := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = tracerShutdown(tracerCtx)
+	cancelTracer()
 
 	os.Exit(1) // Exit with an error for cosmovisor to restart the process
 }
