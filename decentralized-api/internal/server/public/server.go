@@ -17,6 +17,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	echomw "github.com/labstack/echo/v4/middleware"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/labstack/echo/otelecho"
 )
 
 const httpClientTimeout = 20 * time.Minute
@@ -66,6 +67,7 @@ func NewServer(
 	opts ...ServerOption) *Server {
 	e := echo.New()
 	e.HTTPErrorHandler = middleware.TransparentErrorHandler
+	applyInboundTracingMiddleware(e, "decentralized-api")
 
 	// Set the package-level configManagerRef
 	configManagerRef = configManager
@@ -177,6 +179,16 @@ func (s *Server) SubnetGroup() *echo.Group {
 
 func (s *Server) Start(addr string) {
 	go s.e.Start(addr)
+}
+
+// applyInboundTracingMiddleware registers otelecho so every inbound request
+// produces a server span and the global TextMapPropagator (set by
+// observability.InitTracer) extracts W3C traceparent from upstream callers.
+// When tracing is disabled (no-op TracerProvider installed by InitTracer),
+// the middleware still runs but produces non-recording spans — zero export
+// cost.
+func applyInboundTracingMiddleware(e *echo.Echo, serviceName string) {
+	e.Use(otelecho.Middleware(serviceName))
 }
 
 func (s *Server) getStatus(ctx echo.Context) error {

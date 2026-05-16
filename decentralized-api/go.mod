@@ -4,6 +4,7 @@ go 1.24.2
 
 require (
 	cosmossdk.io/errors v1.0.2
+	cosmossdk.io/math v1.5.3
 	cosmossdk.io/store v1.1.2
 	cosmossdk.io/x/upgrade v0.1.4
 	github.com/cometbft/cometbft v0.38.21
@@ -34,6 +35,7 @@ require (
 	github.com/supranational/blst v0.3.16
 	github.com/testcontainers/testcontainers-go v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.40.0
+	go.opentelemetry.io/contrib/instrumentation/github.com/labstack/echo/otelecho v0.64.0
 	go.opentelemetry.io/otel v1.39.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.39.0
 	go.opentelemetry.io/otel/sdk v1.39.0
@@ -42,6 +44,7 @@ require (
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546
 	golang.org/x/sync v0.19.0
 	google.golang.org/grpc v1.77.0
+	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.46.1
 	subnet v0.0.0-00010101000000-000000000000
 )
@@ -61,7 +64,6 @@ require (
 	cosmossdk.io/core v0.11.3 // indirect
 	cosmossdk.io/depinject v1.2.1 // indirect
 	cosmossdk.io/log v1.6.0 // indirect
-	cosmossdk.io/math v1.5.3 // indirect
 	cosmossdk.io/schema v1.1.0 // indirect
 	cosmossdk.io/tools/confix v0.1.2 // indirect
 	cosmossdk.io/x/circuit v0.1.1 // indirect
@@ -295,7 +297,6 @@ require (
 	google.golang.org/genproto v0.0.0-20241118233622-e639e219e697 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20251222181119-0a764e51fe1b // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251222181119-0a764e51fe1b // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
