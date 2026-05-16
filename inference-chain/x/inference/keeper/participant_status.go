@@ -2,6 +2,7 @@ package keeper
 
 import (
 	"context"
+	"strconv"
 
 	"cosmossdk.io/collections"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -72,6 +73,30 @@ func (k Keeper) UpdateParticipantStatus(ctx context.Context, participant *types.
 
 func (k Keeper) deactiveParticipant(ctx context.Context, participant *types.Participant, reason calculations.ParticipantStatusReason, params types.Params) error {
 	k.LogWarn("Participant deactivated for downtime", types.Validation, "address", participant.Address, "reason", reason, "stats", participant.CurrentEpochStats)
+
+	// Emit gonka.failed_confirmation_poc.fire ONLY for FailedConfirmationPoC
+	// trips (deactiveParticipant is also called on Downtime, etc.). Determinism:
+	// values via strconv / Decimal.ToDecimal().String(); no time, no rand.
+	// Schema: inference-chain/docs/abci_events.md.
+	if reason == calculations.FailedConfirmationPoC {
+		epoch, _ := k.GetEffectiveEpochIndex(ctx)
+		finalRatio := ""
+		if participant.CurrentEpochStats != nil && participant.CurrentEpochStats.ConfirmationPoCRatio != nil {
+			finalRatio = participant.CurrentEpochStats.ConfirmationPoCRatio.ToDecimal().String()
+		}
+		alphaThreshold := ""
+		if params.ConfirmationPocParams != nil && params.ConfirmationPocParams.AlphaThreshold != nil {
+			alphaThreshold = params.ConfirmationPocParams.AlphaThreshold.ToDecimal().String()
+		}
+		sdk.UnwrapSDKContext(ctx).EventManager().EmitEvent(sdk.NewEvent(
+			"gonka.failed_confirmation_poc.fire",
+			sdk.NewAttribute("epoch", strconv.FormatUint(epoch, 10)),
+			sdk.NewAttribute("participant", participant.Address),
+			sdk.NewAttribute("final_ratio", finalRatio),
+			sdk.NewAttribute("alpha_threshold", alphaThreshold),
+		))
+	}
+
 	// 1) Slash collateral
 	k.SlashForDowntime(ctx, participant, params)
 
