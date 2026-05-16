@@ -30,6 +30,15 @@ from api.routes import router as api_router
 from api.watcher import watch_managers
 from api.proxy import ProxyMiddleware, start_vllm_proxy, stop_vllm_proxy, setup_vllm_proxy, start_backward_compatibility, stop_backward_compatibility
 
+from api.observability import init_tracer
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+
+# Tracing: no-op when OTEL_EXPORTER_OTLP_ENDPOINT is unset (the default).
+# When set, mlnode emits a server span per inbound request continuing the
+# api->mlnode trace via the W3C traceparent header.
+init_tracer()
+
 
 WATCH_INTERVAL = 2
 
@@ -80,6 +89,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Auto-instrument FastAPI so every inbound request emits a server span.
+# Honors upstream W3C traceparent (set by the api's outbound otelhttp
+# transport in slice 1.4) so api -> mlnode appears as one trace tree.
+FastAPIInstrumentor.instrument_app(app)
 
 app.include_router(health_router)
 
