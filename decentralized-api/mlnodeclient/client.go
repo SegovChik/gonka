@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/productscience/inference/x/inference/types"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const (
@@ -33,6 +34,12 @@ func NewNodeClient(pocUrl string, inferenceUrl string) *Client {
 		inferenceUrl: inferenceUrl,
 		client: http.Client{
 			Timeout: 15 * time.Minute,
+			// otelhttp wraps the default transport so every outbound mlnode call
+			// produces a client-kind span and injects the W3C traceparent header.
+			// In the no-op tracing path (global noop TracerProvider installed by
+			// observability.InitTracer when OTEL_EXPORTER_OTLP_ENDPOINT is unset),
+			// otelhttp produces non-recording spans — zero export cost.
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
 		},
 		mlGrpcCallbackAddress: "api-private:9300", // TODO: PRTODO: make this configurable
 	}
@@ -44,9 +51,12 @@ func (api *Client) Stop(ctx context.Context) error {
 		return err
 	}
 
-	_, err = utils.SendPostJsonRequest(ctx, &api.client, requestUrl, nil)
+	resp, err := utils.SendPostJsonRequest(ctx, &api.client, requestUrl, nil)
 	if err != nil {
 		return err
+	}
+	if resp != nil {
+		_ = resp.Body.Close()
 	}
 
 	return nil

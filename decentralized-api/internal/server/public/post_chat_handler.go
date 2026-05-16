@@ -26,6 +26,7 @@ import (
 	"github.com/productscience/inference/cmd/inferenced/cmd"
 	"github.com/productscience/inference/x/inference/calculations"
 	"github.com/productscience/inference/x/inference/types"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 )
@@ -75,6 +76,10 @@ func NewNoRedirectClient(timeout time.Duration) *http.Client {
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+		// otelhttp wraps the default transport so the inference proxy emits a
+		// client-kind span per outbound mlnode call and propagates the W3C
+		// traceparent header downstream (consumed by mlnode in PR #2).
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
 	}
 }
 
