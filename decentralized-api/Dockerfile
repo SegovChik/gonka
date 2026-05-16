@@ -119,6 +119,15 @@ ENV DAEMON_ALLOW_DOWNLOAD_BINARIES=true
 ENV DAEMON_RESTART_AFTER_UPGRADE=true
 ENV DAEMON_DOWNLOAD_RETRIES=-1
 
+# Optional OpenTelemetry tracing. Unset (the default) keeps the SDK in a
+# no-op state: zero export, zero exporter goroutines. Setting the endpoint
+# is the single switch to turn tracing on; see README.md "Observability".
+#   ENV OTEL_EXPORTER_OTLP_ENDPOINT=otelcol:4317
+#   ENV OTEL_SERVICE_NAME=decentralized-api
+#   ENV OTEL_TRACES_SAMPLER=parentbased_traceidratio
+#   ENV OTEL_TRACES_SAMPLER_ARG=0.05
+#   ENV OTEL_RESOURCE_ATTRIBUTES=gonka.network=mainnet
+
 # Copy over binaries from the build-env
 COPY --from=builder /app/decentralized-api/build/dapi /usr/bin/decentralized-api
 COPY --from=builder /app/inference-chain/build/inferenced /usr/bin/inferenced
