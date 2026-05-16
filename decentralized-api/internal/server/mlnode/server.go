@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/labstack/echo/otelecho"
 )
 
 type Server struct {
@@ -41,6 +42,7 @@ func NewServer(recorder cosmos_client.CosmosMessageClient, broker *broker.Broker
 
 	e.HTTPErrorHandler = middleware.TransparentErrorHandler
 
+	e.Use(otelecho.Middleware("decentralized-api"))
 	e.Use(middleware.LoggingMiddleware)
 
 	s := &Server{

@@ -23,6 +23,7 @@ import (
 	collateraltypes "github.com/productscience/inference/x/collateral/types"
 	"github.com/productscience/inference/x/inference/types"
 	restrictionstypes "github.com/productscience/inference/x/restrictions/types"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/labstack/echo/otelecho"
 )
 
 type Server struct {
@@ -47,6 +48,7 @@ func NewServer(
 
 	e := echo.New()
 	e.HTTPErrorHandler = middleware.TransparentErrorHandler
+	e.Use(otelecho.Middleware("decentralized-api"))
 	s := &Server{
 		e:              e,
 		nodeBroker:     nodeBroker,
