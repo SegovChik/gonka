@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 
 	mathsdk "cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -18,6 +20,23 @@ import (
 )
 
 var pocDeviationCoeff = decimal.New(909, -3)
+
+// sortedJoin produces a deterministic comma-separated representation of a
+// string slice for use in ABCI event attributes. Sorting guarantees byte-
+// identical attribute values across validators even if the input slice
+// happened to differ in ordering (both measuredModelsByAddr and
+// expectedModelsByAddr are already built from proto-slice iteration -
+// the sort makes the determinism property explicit and resilient to
+// upstream refactors).
+func sortedJoin(parts []string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	cp := make([]string, len(parts))
+	copy(cp, parts)
+	sort.Strings(cp)
+	return strings.Join(cp, ",")
+}
 
 // handleConfirmationPoC manages confirmation PoC trigger decisions and phase transitions
 func (am AppModule) handleConfirmationPoC(ctx context.Context, blockHeight int64) error {
@@ -400,9 +419,24 @@ func (am AppModule) evaluateConfirmation(
 
 	confirmationParticipants := am.updateConfirmationWeightsV2(ctx, event)
 	measured := make(map[string]int64, len(confirmationParticipants))
+	// Per-participant set of model ids that contributed any measured weight
+	// for THIS confirmation event. Compared against expected_model_set on
+	// the confirmation_event.participant ABCI event to surface model-set
+	// drift in real time (alert: an honest worker with empty measured set
+	// but non-empty expected set is about to be slashed - the exact pattern
+	// behind the epoch-266 incident).
+	measuredModelsByAddr := make(map[string][]string, len(confirmationParticipants))
 	for _, p := range confirmationParticipants {
-		p.Weight = AggregateConsensusWeight(ExtractModelWeights(p), coefficients)
+		modelWeights := ExtractModelWeights(p)
+		p.Weight = AggregateConsensusWeight(modelWeights, coefficients)
 		measured[p.Index] = p.Weight
+		measuredModels := make([]string, 0, len(modelWeights))
+		for _, mw := range modelWeights {
+			if mw.RawWeight > 0 {
+				measuredModels = append(measuredModels, mw.ModelID)
+			}
+		}
+		measuredModelsByAddr[p.Index] = measuredModels
 	}
 
 	// Missing snapshot collapses the preserved side to zero; min-take and slashing
@@ -413,7 +447,7 @@ func (am AppModule) evaluateConfirmation(
 			types.PoC, "triggerHeight", event.TriggerHeight, "error", err)
 	}
 
-	preserved, notPreserved, err := am.partitionWeightByPreservation(ctx, event.EpochIndex, coefficients, &preservedSnapshot)
+	preserved, notPreserved, expectedModelsByAddr, err := am.partitionWeightByPreservation(ctx, event.EpochIndex, coefficients, &preservedSnapshot)
 	if err != nil {
 		return fmt.Errorf("evaluateConfirmation: failed to partition weights: %w", err)
 	}
@@ -487,6 +521,14 @@ func (am AppModule) evaluateConfirmation(
 			sdk.NewAttribute("total_expected", strconv.FormatInt(preserved[addr]+notPreserved[addr], 10)),
 			sdk.NewAttribute("preserved", strconv.FormatInt(preserved[addr], 10)),
 			sdk.NewAttribute("ratio", ratio.ToDecimal().String()),
+			// Model-set-drift detector inputs: when measured_model_set is
+			// empty but expected_model_set is non-empty (or they diverge),
+			// a slasher is about to fire on a worker that DID their job for
+			// some models but not the ones the chain expected this event.
+			// Surface them as sorted CSV strings for trivial dashboard
+			// equality checks.
+			sdk.NewAttribute("measured_model_set", sortedJoin(measuredModelsByAddr[addr])),
+			sdk.NewAttribute("expected_model_set", sortedJoin(expectedModelsByAddr[addr])),
 		))
 	}
 
@@ -673,18 +715,31 @@ func (am AppModule) partitionWeightByPreservation(
 	epochId uint64,
 	coefficients map[string]mathsdk.LegacyDec,
 	preservedSnapshot *types.PreservedNodesSnapshot,
-) (preserved, notPreserved map[string]int64, err error) {
+) (preserved, notPreserved map[string]int64, expectedModelsByAddr map[string][]string, err error) {
 	participants, found := am.keeper.GetActiveParticipants(ctx, epochId)
 	if !found {
 		am.LogError("partitionWeightByPreservation: Active participants not found", types.PoC, "epochId", epochId)
-		return nil, nil, errors.New("partitionWeightByPreservation: active participants not found. epochId: " + strconv.FormatUint(epochId, 10))
+		return nil, nil, nil, errors.New("partitionWeightByPreservation: active participants not found. epochId: " + strconv.FormatUint(epochId, 10))
 	}
 
 	preserved = make(map[string]int64, len(participants.Participants))
 	notPreserved = make(map[string]int64, len(participants.Participants))
+	// expectedModelsByAddr captures the set of model_ids each participant
+	// was supposed to serve for this epoch (any model with at least one
+	// non-zero PocWeight ml-node). Feeds the expected_model_set attribute
+	// on the gonka.confirmation_event.participant ABCI event, enabling the
+	// off-chain model-set-drift detector (alert when a participant's
+	// measured_model_set diverges from their expected_model_set for the
+	// same event - the symptom that bit epoch 266).
+	expectedModelsByAddr = make(map[string][]string, len(participants.Participants))
 
 	for _, p := range participants.Participants {
 		var preservedTotal, notPreservedTotal int64
+		// Track which model ids contributed any weight for this participant.
+		// Iteration order is the proto-slice order of p.Models, deterministic
+		// across validators; no map iteration.
+		expectedModels := make([]string, 0, len(p.Models))
+		seenModel := make(map[string]bool, len(p.Models))
 		for i, nodeArray := range p.MlNodes {
 			if nodeArray == nil {
 				continue
@@ -699,9 +754,13 @@ func (am AppModule) partitionWeightByPreservation(
 				coeff = mathsdk.LegacyOneDec()
 			}
 			var rawPreserved, rawNotPreserved int64
+			var modelHasWeight bool
 			for _, mlNode := range nodeArray.MlNodes {
 				if mlNode == nil {
 					continue
+				}
+				if mlNode.PocWeight > 0 {
+					modelHasWeight = true
 				}
 				if keeper.IsPreservedNode(preservedNodeSet, p.Index, mlNode.NodeId) {
 					rawPreserved += mlNode.PocWeight
@@ -711,10 +770,15 @@ func (am AppModule) partitionWeightByPreservation(
 			}
 			preservedTotal += coeff.MulInt64(rawPreserved).TruncateInt64()
 			notPreservedTotal += coeff.MulInt64(rawNotPreserved).TruncateInt64()
+			if modelHasWeight && !seenModel[modelId] {
+				seenModel[modelId] = true
+				expectedModels = append(expectedModels, modelId)
+			}
 		}
 		preserved[p.Index] = preservedTotal
 		notPreserved[p.Index] = notPreservedTotal
+		expectedModelsByAddr[p.Index] = expectedModels
 	}
 
-	return preserved, notPreserved, nil
+	return preserved, notPreserved, expectedModelsByAddr, nil
 }

@@ -62,7 +62,7 @@ func TestPartitionWeightByPreservation(t *testing.T) {
 		},
 	}))
 
-	preserved, notPreserved, err := am.partitionWeightByPreservation(
+	preserved, notPreserved, _, err := am.partitionWeightByPreservation(
 		ctx,
 		5,
 		map[string]mathsdk.LegacyDec{"model-a": mathsdk.LegacyOneDec()},

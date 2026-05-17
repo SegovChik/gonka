@@ -46,6 +46,10 @@ Emitted **once per participant whose `ConfirmationWeight` was visited** during e
 | `total_expected` | int (formatted string) | Sum `preserved[participant] + notPreserved[participant]` — the participant's pre-split total weight per `partitionWeightByPreservation`. |
 | `preserved` | int (formatted string) | Preserved-side weight contribution from this event. |
 | `ratio` | string (decimal) | Per-participant slashing ratio (the same value written to `participant.CurrentEpochStats.ConfirmationPoCRatio`). Serialize with `(shopspring/decimal).String()`. |
+| `measured_model_set` | string (sorted CSV) | Comma-separated model_ids where this participant reported any measured weight (`RawWeight > 0`) for this event. Sorted alphabetically for byte-identity across validators. |
+| `expected_model_set` | string (sorted CSV) | Comma-separated model_ids the participant was registered to serve this epoch (any model with at least one non-zero `PocWeight` ml-node). Sorted alphabetically. |
+
+**Model-set-drift detector**: when `measured_model_set` is empty (or a strict subset) but `expected_model_set` is non-empty for the same participant in the same event, the slasher is about to fire against a worker that did their job for some models but not the ones the chain expected this event. Indexer/dashboards should alert on this — it's the exact symptom behind the epoch-266 incident, surfaced in real time.
 
 ### `gonka.failed_confirmation_poc.fire`
 
