@@ -3,6 +3,7 @@ package keeper
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	sdkerrors "cosmossdk.io/errors"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -162,6 +163,22 @@ func (k msgServer) SubmitPocValidationsV2(goCtx context.Context, msg *types.MsgS
 			"participant", validation.ParticipantAddress,
 			"model_id", modelID,
 			"validatedWeight", validation.ValidatedWeight)
+
+		// Emit gonka.poc.validation_vote ABCI event per successfully stored
+		// validation. Closes the "how did the validators vote on this
+		// worker?" forensic gap (today: poc-v2-validations-for-stage +
+		// manual reformat of N votes). Determinism: emitted inside the
+		// per-validation loop after SetPocValidationV2 success; iterating
+		// msg.Validations in proto-slice order; all values via strconv.
+		ctx.EventManager().EmitEvent(sdk.NewEvent(
+			"gonka.poc.validation_vote",
+			sdk.NewAttribute("validator", msg.Creator),
+			sdk.NewAttribute("participant", validation.ParticipantAddress),
+			sdk.NewAttribute("model_id", modelID),
+			sdk.NewAttribute("poc_stage_start_height", strconv.FormatInt(startBlockHeight, 10)),
+			sdk.NewAttribute("trigger_height", strconv.FormatInt(startBlockHeight, 10)),
+			sdk.NewAttribute("validated_weight", strconv.FormatInt(validation.ValidatedWeight, 10)),
+		))
 	}
 
 	k.LogInfo("[SubmitPocValidationsV2] Batch complete", types.PoC,

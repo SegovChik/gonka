@@ -62,6 +62,32 @@ Emitted **once per participant** at the trip site that observes `calculations.Co
 | `final_ratio` | string (decimal) | Final ratio compared against `alpha_threshold`. |
 | `alpha_threshold` | string (decimal) | Threshold value the ratio was compared against (from `pocParams`). |
 
+### `gonka.poc.store_commit`
+
+Emitted **once per persisted `PoCV2CommitEntry`** from `x/inference/keeper/msg_server_poc_v2_commit.go::PoCV2StoreCommit` after `persistPoCV2CommitUpdates` returns success. Closes the "did the worker actually submit?" forensic gap (today: `inferenced query inference all-poc-v2-store-commits ... --height ...` + manual group-by).
+
+| attribute | type | meaning |
+|---|---|---|
+| `participant` | string | Bech32 submitter (msg.Creator). |
+| `model_id` | string | Model id for this commit entry. |
+| `count_delta` | int (formatted string) | New nonces added by this submission (the `countDelta` of the persisted update — accommodates incremental commits in the exchange window). |
+| `root_hash` | string (hex) | Hex-encoded MMR root hash of the commit entry. |
+| `poc_stage_start_height` | int (formatted string) | `msg.PocStageStartBlockHeight` — the PoC stage this commit belongs to. |
+| `trigger_height` | int (formatted string) | Mirror of `poc_stage_start_height` for cross-event correlation with `confirmation_event.*`. |
+
+### `gonka.poc.validation_vote`
+
+Emitted **once per successfully stored `PoCValidation`** from `x/inference/keeper/msg_server_poc_validations_v2.go::SubmitPocValidationsV2` inside the per-validation loop after `SetPocValidationV2` returns success. Closes the "how did the validators vote?" forensic gap (today: `poc-v2-validations-for-stage` + manual reformat of N votes).
+
+| attribute | type | meaning |
+|---|---|---|
+| `validator` | string | Bech32 validator (msg.Creator). |
+| `participant` | string | Bech32 worker whose batch is being validated. |
+| `model_id` | string | Model id for this vote. |
+| `poc_stage_start_height` | int (formatted string) | `msg.PocStageStartBlockHeight`. |
+| `trigger_height` | int (formatted string) | Mirror for correlation. |
+| `validated_weight` | int (formatted string) | The validator's claimed weight contribution after sampling/check. |
+
 ### `gonka.settlement.reward_compute`
 
 Emitted **once per participant at settlement** from `x/inference/keeper/accountsettle.go::Settle`, iterating the `amounts []*SettleResult` slice (deterministic — produced by `GetBitcoinSettleAmounts`). Emission happens in the caller, not inside `CalculateParticipantBitcoinRewards` (which has no `sdk.Context`); the function returns per-participant fields via an extended `SettleResult` struct.

@@ -2,7 +2,9 @@ package keeper
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"strconv"
 
 	"cosmossdk.io/collections"
 	sdkerrors "cosmossdk.io/errors"
@@ -100,6 +102,30 @@ func (k msgServer) PoCV2StoreCommit(goCtx context.Context, msg *types.MsgPoCV2St
 
 	if err := k.persistPoCV2CommitUpdates(ctx, msg.Creator, startBlockHeight, currentBlockHeight, addr, updates); err != nil {
 		return nil, err
+	}
+
+	// Emit one gonka.poc.store_commit ABCI event per persisted update so
+	// off-chain observers can prove "participant P submitted X nonces for
+	// model M at root R" without scraping query results. Closes the
+	// "did the worker actually submit?" forensic gap (the question that
+	// today requires `all-poc-v2-store-commits ... --height ...` queries).
+	// Determinism: iterate `updates` in the order they were built (same as
+	// msg.Entries proto-slice order); all values via strconv / hex.
+	storeCommitEventMgr := ctx.EventManager()
+	for _, update := range updates {
+		var rootHashHex string
+		if update.entry != nil {
+			rootHashHex = hex.EncodeToString(update.entry.RootHash)
+		}
+		storeCommitEventMgr.EmitEvent(sdk.NewEvent(
+			"gonka.poc.store_commit",
+			sdk.NewAttribute("participant", msg.Creator),
+			sdk.NewAttribute("model_id", update.modelID),
+			sdk.NewAttribute("count_delta", strconv.FormatUint(update.countDelta, 10)),
+			sdk.NewAttribute("root_hash", rootHashHex),
+			sdk.NewAttribute("poc_stage_start_height", strconv.FormatInt(startBlockHeight, 10)),
+			sdk.NewAttribute("trigger_height", strconv.FormatInt(startBlockHeight, 10)),
+		))
 	}
 
 	return &types.MsgPoCV2StoreCommitResponse{}, nil
