@@ -831,6 +831,19 @@ func filterNodesForValidation(nodes []broker.NodeResponse, latestEpoch uint64, c
 // reportInvalidParticipant submits a validation result with ValidatedWeight=-1 (invalid) to chain.
 // This is called when validation fails permanently (e.g., retry exhaustion).
 func (v *OffChainValidator) reportInvalidParticipant(pocHeight int64, participantAddress string) {
+	// api.confirmation.submit_evidence_tx closes the "did api submit the
+	// confirmation evidence to chain?" forensic loop (paired with the
+	// chain-side gonka.poc.validation_vote event when PR #3 lands).
+	_, txSpan := otel.Tracer(tracerName).Start(context.Background(), "api.confirmation.submit_evidence_tx",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String(observability.AttrParticipantAddress, participantAddress),
+			attribute.Int64(observability.AttrEventTriggerHeight, pocHeight),
+			attribute.String("gonka.evidence.verdict", "invalid"),
+		),
+	)
+	defer txSpan.End()
+
 	msg := &inference.MsgSubmitPocValidationsV2{
 		PocStageStartBlockHeight: pocHeight,
 		Validations: []*inference.PoCValidationPayloadV2{
@@ -841,6 +854,7 @@ func (v *OffChainValidator) reportInvalidParticipant(pocHeight int64, participan
 		},
 	}
 	if err := v.recorder.SubmitPocValidationsV2(msg); err != nil {
+		txSpan.RecordError(err)
 		logging.Error("OffChainValidator: failed to report invalid participant", types.PoC,
 			"participant", participantAddress, "error", err)
 	} else {
