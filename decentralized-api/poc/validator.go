@@ -15,16 +15,23 @@ import (
 	"decentralized-api/broker"
 	"decentralized-api/chainphase"
 	"decentralized-api/cosmosclient"
+	"decentralized-api/internal/observability"
 	"decentralized-api/logging"
 	"decentralized-api/mlnodeclient"
 
 	"github.com/productscience/inference/x/inference/calculations"
 	"github.com/productscience/inference/x/inference/types"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
 	POC_VALIDATE_GET_NODES_RETRIES     = 30
 	POC_VALIDATE_GET_NODES_RETRY_DELAY = 5 * time.Second
+
+	// tracerName scopes spans emitted by the off-chain confirmation validator.
+	tracerName = "decentralized-api/poc"
 )
 
 // proofFetcher abstracts proof retrieval so it can be stubbed in tests.
@@ -158,6 +165,16 @@ func NewOffChainValidator(
 }
 
 func (v *OffChainValidator) ValidateAll(pocStageStartBlockHeight int64, pocStartBlockHash string) {
+	ctx, span := otel.Tracer(tracerName).Start(context.Background(), "api.confirmation.fetch_assignments",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String(observability.AttrParticipantAddress, v.validatorAddress),
+			attribute.Int64(observability.AttrEventTriggerHeight, pocStageStartBlockHeight),
+		),
+	)
+	defer span.End()
+	_ = ctx // future per-participant work uses v.tracedValidate(ctx, ...)
+
 	logging.Info("OffChainValidator: starting validation", types.PoC,
 		"pocStageStartBlockHeight", pocStageStartBlockHeight,
 		"pocStartBlockHash", pocStartBlockHash)
@@ -538,7 +555,16 @@ func (v *OffChainValidator) validateParticipant(
 	pocParams *types.PocParams,
 	sampleSize int,
 ) validateResult {
-	ctx := context.Background()
+	ctx, span := otel.Tracer(tracerName).Start(context.Background(), "api.confirmation.dispatch_to_mlnode",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String(observability.AttrParticipantAddress, work.address),
+			attribute.String(observability.AttrModelID, work.modelId),
+			attribute.Int64(observability.AttrEventTriggerHeight, pocHeight),
+		),
+	)
+	defer span.End()
+
 	modelNodes := filterValidationNodesForModel(nodes, work.modelId)
 	if len(modelNodes) == 0 {
 		logging.Warn("OffChainValidator: no validation executors for model", types.PoC,
@@ -899,6 +925,22 @@ func filterValidationNodesForModel(nodes []broker.NodeResponse, modelID string) 
 // reportInvalidParticipant submits a validation result with ValidatedWeight=-1 (invalid) to chain.
 // This is called when validation fails permanently (e.g., retry exhaustion).
 func (v *OffChainValidator) reportInvalidParticipant(pocHeight int64, participantAddress, modelID string) {
+	// api.confirmation.submit_evidence_tx closes the "did api submit the
+	// confirmation evidence to chain?" loop (paired with the chain-side
+	// gonka.poc.validation_vote event). Attrs: target participant (whose
+	// evidence we're submitting), model_id, pocHeight (matches
+	// validation_vote's poc_stage_start_height).
+	_, txSpan := otel.Tracer(tracerName).Start(context.Background(), "api.confirmation.submit_evidence_tx",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String(observability.AttrParticipantAddress, participantAddress),
+			attribute.String(observability.AttrModelID, modelID),
+			attribute.Int64(observability.AttrEventTriggerHeight, pocHeight),
+			attribute.String("gonka.evidence.verdict", "invalid"),
+		),
+	)
+	defer txSpan.End()
+
 	msg := &types.MsgSubmitPocValidationsV2{
 		PocStageStartBlockHeight: pocHeight,
 		Validations: []*types.PoCValidationEntryV2{
@@ -910,6 +952,7 @@ func (v *OffChainValidator) reportInvalidParticipant(pocHeight int64, participan
 		},
 	}
 	if err := v.recorder.SubmitPocValidationsV2(msg); err != nil {
+		txSpan.RecordError(err)
 		logging.Error("OffChainValidator: failed to report invalid participant", types.PoC,
 			"participant", participantAddress, "error", err)
 	} else {

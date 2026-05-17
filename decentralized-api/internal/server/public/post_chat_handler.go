@@ -22,13 +22,22 @@ import (
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/labstack/echo/v4"
+	"decentralized-api/internal/observability"
+
 	"github.com/productscience/inference/api/inference/inference"
 	"github.com/productscience/inference/cmd/inferenced/cmd"
 	"github.com/productscience/inference/x/inference/calculations"
 	"github.com/productscience/inference/x/inference/types"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 )
+
+// inferenceTracerName scopes spans emitted from the user-facing inference path.
+const inferenceTracerName = "decentralized-api/inference"
 
 // AuthKeyContext represents the context in which an AuthKey was used
 type AuthKeyContext int
@@ -75,6 +84,10 @@ func NewNoRedirectClient(timeout time.Duration) *http.Client {
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+		// otelhttp wraps the default transport so the inference proxy emits a
+		// client-kind span per outbound mlnode call and propagates the W3C
+		// traceparent header downstream (consumed by mlnode in PR #2).
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
 	}
 }
 
@@ -604,6 +617,21 @@ func (s *Server) handleExecutorRequest(ctx echo.Context, request *ChatRequest, w
 	if inferencePath == "" {
 		inferencePath = chatCompletionsPath
 	}
+	// Manual span for the user-facing inference proxy. Attributes are explicitly
+	// PII-free per NFR-13: no prompt body, no message content, no auth keys -
+	// only structural identifiers.
+	proxyCtx, proxySpan := otel.Tracer(inferenceTracerName).Start(
+		ctx.Request().Context(),
+		"api.inference.proxy_to_mlnode",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String(observability.AttrModelID, request.OpenAiRequest.Model),
+			attribute.String(observability.AttrParticipantAddress, s.recorder.GetAccountAddress()),
+			attribute.String(observability.AttrTaskID, inferenceId),
+		),
+	)
+	defer proxySpan.End()
+
 	resp, err := broker.DoWithLockedNodeHTTPRetry(s.nodeBroker, request.OpenAiRequest.Model, nil, 3, func(node *broker.Node) (*http.Response, *broker.ActionError) {
 		logging.Info("Successfully acquired node lock for inference", types.Inferences,
 			"inferenceId", inferenceId, "node", node.Id, "url", node.InferenceUrlWithVersion(s.configManager.GetCurrentNodeVersion()))
@@ -612,11 +640,15 @@ func (s *Server) handleExecutorRequest(ctx echo.Context, request *ChatRequest, w
 		if err != nil {
 			return nil, broker.NewApplicationActionError(err)
 		}
-		resp, postErr := s.httpClient.Post(
-			completionsUrl,
-			request.Request.Header.Get("Content-Type"),
-			bytes.NewReader(modifiedRequestBody.NewBody),
-		)
+		// Use Do(req) instead of Post(...) so the request carries proxyCtx and
+		// otelhttp's client span (from slice 1.4's wrapped Transport) becomes a
+		// child of api.inference.proxy_to_mlnode in the trace tree.
+		req, reqErr := http.NewRequestWithContext(proxyCtx, http.MethodPost, completionsUrl, bytes.NewReader(modifiedRequestBody.NewBody))
+		if reqErr != nil {
+			return nil, broker.NewApplicationActionError(reqErr)
+		}
+		req.Header.Set("Content-Type", request.Request.Header.Get("Content-Type"))
+		resp, postErr := s.httpClient.Do(req)
 		if postErr != nil {
 			return nil, broker.NewTransportActionError(postErr)
 		}

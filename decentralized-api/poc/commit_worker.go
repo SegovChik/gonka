@@ -11,10 +11,14 @@ import (
 
 	"decentralized-api/chainphase"
 	"decentralized-api/cosmosclient"
+	"decentralized-api/internal/observability"
 	"decentralized-api/logging"
 	"decentralized-api/poc/artifacts"
 
 	"github.com/productscience/inference/x/inference/types"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const distributionRetryInterval = 30 * time.Second
@@ -197,10 +201,27 @@ func (w *CommitWorker) maybeSubmitCommit(pocHeight int64) {
 
 	msg := &types.MsgPoCV2StoreCommit{
 		PocStageStartBlockHeight: pocHeight,
-		Entries:                 entries,
+		Entries:                  entries,
 	}
 
+	// api.poc.submit_nonces_tx closes the "did api actually submit this
+	// worker's PoC nonces?" forensic loop (paired with the chain-side
+	// gonka.poc.store_commit event from PR #3 slice 3.X). Attrs: self
+	// (the submitter), the pocHeight (matches store_commit's
+	// poc_stage_start_height for correlation), and the model count. PII-
+	// safe: no nonce data, no root hashes in attrs.
+	_, txSpan := otel.Tracer(tracerName).Start(context.Background(), "api.poc.submit_nonces_tx",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String(observability.AttrParticipantAddress, w.participantAddress),
+			attribute.Int64(observability.AttrEventTriggerHeight, pocHeight),
+			attribute.Int("gonka.poc.entries_count", len(entries)),
+		),
+	)
+	defer txSpan.End()
+
 	if err := w.recorder.SubmitPoCV2StoreCommit(msg); err != nil {
+		txSpan.RecordError(err)
 		logging.Warn("CommitWorker: commit failed", types.PoC,
 			"pocHeight", pocHeight, "error", err)
 		return
